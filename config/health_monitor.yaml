@@ -19,6 +19,6 @@ nodes:
     
   - name: Camera Node
     heartbeat_topic: /node6/heartbeat
-    deadline_ms: 500
-    liveliness_ms: 1000
+    deadline_ms: 1200
+    liveliness_ms: 2000
     failure_reason: CAMERA_NODE_FAILURE

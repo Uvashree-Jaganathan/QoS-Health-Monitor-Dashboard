@@ -45,9 +45,35 @@ ament_target_dependencies(status_display_node rclcpp std_msgs)
 add_executable(web_server_node src/web_server_node.cpp)
 ament_target_dependencies(web_server_node rclcpp std_msgs)
 
+# network monitor Node
+add_executable(network_monitor_node src/network_monitor_node.cpp)
+ament_target_dependencies(network_monitor_node rclcpp std_msgs)
+
+# supervisor Node
+add_executable(supervisor_node src/supervisor_node.cpp)
+ament_target_dependencies(supervisor_node rclcpp std_msgs)
+
 # Node 7 Test Node
 add_executable(node7_test_node src/node7_test_node.cpp)
 ament_target_dependencies(node7_test_node rclcpp std_msgs)
+
+# Node 9 Test Node
+add_executable(node9_qos_test_node src/node9_qos_test_node.cpp)
+ament_target_dependencies(node9_qos_test_node rclcpp std_msgs)
+
+# Node 10 Test Node
+add_executable(node10_qos_test_node src/node10_qos_test_node.cpp)
+ament_target_dependencies(node10_qos_test_node rclcpp std_msgs)
+
+
+# Node 11 Test Node
+add_executable(node11_qos_test_node src/node11_qos_test_node.cpp)
+ament_target_dependencies(node11_qos_test_node rclcpp std_msgs)
+
+# Node 12 Test Node
+add_executable(node12_qos_test_node src/node12_qos_test_node.cpp)
+ament_target_dependencies(node12_qos_test_node rclcpp std_msgs)
+
 
 # Install all nodes
 install(TARGETS
@@ -60,6 +86,13 @@ install(TARGETS
   web_server_node
   camera_node
   node7_test_node
+  node9_qos_test_node
+  node10_qos_test_node
+  node11_qos_test_node
+  node12_qos_test_node
+  supervisor_node
+  network_monitor_node
+  
   DESTINATION lib/${PROJECT_NAME}
 )
 
