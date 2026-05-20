@@ -1,4 +1,6 @@
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <memory>
 #include <random>
 
@@ -26,20 +28,45 @@ public:
       100ms,
       std::bind(&SensorANode::timer_callback, this));
 
-    // Random generator setup
     random_generator_ = std::mt19937(random_device_());
-    distance_distribution_ = std::uniform_real_distribution<float>(0.3f, 3.0f);
+    noise_distribution_ = std::uniform_real_distribution<float>(-0.03f, 0.03f);
+    demo_started_at_ = this->now();
 
     RCLCPP_INFO(this->get_logger(), "Sensor A (LiDAR simulation) started");
   }
 
 private:
+  float distance_for_demo()
+  {
+    const double elapsed = std::fmod((this->now() - demo_started_at_).seconds(), 32.0);
+    const float noise = noise_distribution_(random_generator_);
+
+    if (elapsed < 10.0) {
+      return 2.75f + static_cast<float>(std::sin(elapsed * 0.45) * 0.12) + noise;
+    }
+
+    if (elapsed < 18.0) {
+      const float progress = static_cast<float>((elapsed - 10.0) / 8.0);
+      return std::max(0.45f, 2.75f - (2.25f * progress) + noise);
+    }
+
+    if (elapsed < 23.0) {
+      return 0.45f + static_cast<float>(std::sin(elapsed * 2.0) * 0.04) + noise;
+    }
+
+    if (elapsed < 28.0) {
+      const float progress = static_cast<float>((elapsed - 23.0) / 5.0);
+      return std::min(2.75f, 0.45f + (2.30f * progress) + noise);
+    }
+
+    return 2.75f + static_cast<float>(std::sin(elapsed * 0.35) * 0.10) + noise;
+  }
+
   void timer_callback()
   {
     std_msgs::msg::Float32 data_msg;
 
-    // Random LiDAR distance (0.3m to 3.0m)
-    float distance = distance_distribution_(random_generator_);
+    float distance = distance_for_demo();
     data_msg.data = distance;
 
     data_pub_->publish(data_msg);
@@ -64,7 +91,8 @@ private:
 
   std::random_device random_device_;
   std::mt19937 random_generator_;
-  std::uniform_real_distribution<float> distance_distribution_;
+  std::uniform_real_distribution<float> noise_distribution_;
+  rclcpp::Time demo_started_at_;
 };
 
 int main(int argc, char * argv[])

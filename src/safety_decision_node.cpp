@@ -29,9 +29,9 @@ public:
 
     auto camera_qos = rclcpp::QoS(rclcpp::KeepLast(10));
     camera_qos.reliable();
-    camera_qos.deadline(500ms);
+    camera_qos.deadline(1200ms);
     camera_qos.liveliness(RMW_QOS_POLICY_LIVELINESS_MANUAL_BY_TOPIC);
-    camera_qos.liveliness_lease_duration(1000ms);
+    camera_qos.liveliness_lease_duration(2000ms);
 
     auto node3_qos = rclcpp::QoS(rclcpp::KeepLast(10));
     node3_qos.reliable();

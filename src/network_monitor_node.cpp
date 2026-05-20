@@ -83,47 +83,47 @@ private:
 
   NetworkState get_fake_network_state()
   {
-    int phase = step_ % (connected_phase_count_ + 1);
+    const int phase = step_ % cycle_phase_count_;
 
-    if (phase < connected_phase_count_ && phase % 3 == 0)
+    if (phase < 14)
     {
       return {
-        "CONNECTED:Lab_WiFi:SIGNAL_82:BAND_5GHz",
-        "AVAILABLE:SIGNAL_70",
-        "AVAILABLE:SIGNAL_65",
+        "CONNECTED:Lab_WiFi:SIGNAL_84:BAND_5GHz:LATENCY_24ms",
+        "AVAILABLE:SIGNAL_72:LATENCY_58ms",
+        "AVAILABLE:SIGNAL_67:LATENCY_93ms",
         "WIFI",
         "NETWORK_HEALTHY"
       };
     }
 
-    if (phase < connected_phase_count_ && phase % 3 == 1)
+    if (phase < 18)
     {
       return {
-        "KILLED",
-        "CONNECTED:SIGNAL_70",
-        "AVAILABLE:SIGNAL_65",
+        "KILLED:ACCESS_POINT_RESTARTING",
+        "CONNECTED:SIGNAL_70:LATENCY_68ms",
+        "AVAILABLE:SIGNAL_64:LATENCY_105ms",
         "LTE",
         "NETWORK_DEGRADED"
       };
     }
 
-    if (phase < connected_phase_count_)
+    if (phase < 22)
     {
       return {
-        "KILLED",
-        "KILLED",
-        "CONNECTED:SIGNAL_65",
+        "KILLED:ACCESS_POINT_RESTARTING",
+        "KILLED:CELLULAR_HANDOVER",
+        "CONNECTED:SIGNAL_65:LATENCY_118ms",
         "STARLINK",
         "NETWORK_DEGRADED"
       };
     }
 
     return {
-      "KILLED",
-      "KILLED",
-      "KILLED",
-      "NONE",
-      "NETWORK_DEGRADED"
+      "CONNECTED:Lab_WiFi:SIGNAL_88:BAND_5GHz:LATENCY_21ms",
+      "AVAILABLE:SIGNAL_74:LATENCY_54ms",
+      "AVAILABLE:SIGNAL_69:LATENCY_88ms",
+      "WIFI",
+      "NETWORK_HEALTHY"
     };
   }
 
@@ -156,7 +156,7 @@ private:
   bool network_loss_active_ = false;
   rclcpp::Time network_loss_started_at_;
   const double network_loss_grace_seconds_ = 0.0;
-  const int connected_phase_count_ = 8;
+  const int cycle_phase_count_ = 28;
 };
 
 int main(int argc, char * argv[])

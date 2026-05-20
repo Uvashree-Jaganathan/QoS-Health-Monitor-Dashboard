@@ -7,12 +7,15 @@
 #include <chrono>
 #include <csignal>
 #include <cstring>
+#include <exception>
+#include <algorithm>
 #include <iomanip>
 #include <memory>
 #include <mutex>
 #include <sstream>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/float32.hpp"
@@ -56,6 +59,13 @@ std::string escape_json(const std::string & input)
 
 std::string status_class(const std::string & value)
 {
+  if (value.find("UNHEALTHY") != std::string::npos ||
+      value.find("UNSAFE_STOP") != std::string::npos ||
+      value == "STOP" ||
+      value.find("FAILURE") != std::string::npos) {
+    return "danger";
+  }
+
   if (value.find("HEALTHY") != std::string::npos ||
       value.find("SAFE_NORMAL") != std::string::npos ||
       value == "NORMAL") {
@@ -63,11 +73,43 @@ std::string status_class(const std::string & value)
   }
 
   if (value.find("REDUCE") != std::string::npos ||
-      value.find("USING_") != std::string::npos) {
+      value.find("USING_") != std::string::npos ||
+      value.find("DEGRADED") != std::string::npos) {
     return "warn";
   }
 
   return "danger";
+}
+
+std::string network_reason_value(const std::string & reason, const std::string & key)
+{
+  const std::string prefix = key + "=";
+  const size_t start = reason.find(prefix);
+
+  if (start == std::string::npos) {
+    return "UNKNOWN";
+  }
+
+  const size_t value_start = start + prefix.size();
+  const size_t value_end = reason.find(',', value_start);
+
+  if (value_end == std::string::npos) {
+    return reason.substr(value_start);
+  }
+
+  return reason.substr(value_start, value_end - value_start);
+}
+
+std::string network_state_value(const std::string & reason, const std::string & key)
+{
+  const std::string value = network_reason_value(reason, key);
+  const size_t detail_start = value.find(':');
+
+  if (detail_start == std::string::npos) {
+    return value;
+  }
+
+  return value.substr(0, detail_start);
 }
 }  // namespace
 
@@ -145,10 +187,37 @@ public:
         state_.last_camera = now();
       });
 
-    node1_heartbeat_sub_ = make_heartbeat_sub("/node1/heartbeat", 0);
-    node2_heartbeat_sub_ = make_heartbeat_sub("/node2/heartbeat", 1);
-    node3_heartbeat_sub_ = make_heartbeat_sub("/node3/heartbeat", 2);
-    node6_heartbeat_sub_ = make_heartbeat_sub("/node6/heartbeat", 3);
+    network_status_sub_ = create_subscription<std_msgs::msg::String>(
+      "/network_status", qos, [this](const std_msgs::msg::String::SharedPtr msg) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        state_.network_status = msg->data;
+        state_.last_network = now();
+      });
+
+    network_reason_sub_ = create_subscription<std_msgs::msg::String>(
+      "/network_reason", qos, [this](const std_msgs::msg::String::SharedPtr msg) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        state_.network_reason = msg->data;
+      });
+
+    register_pub_ = create_publisher<std_msgs::msg::String>("/register_node", qos);
+    deregister_pub_ = create_publisher<std_msgs::msg::String>("/deregister_node", qos);
+
+    register_sub_ = create_subscription<std_msgs::msg::String>(
+      "/register_node", qos, [this](const std_msgs::msg::String::SharedPtr msg) {
+        handle_register_node(msg->data);
+      });
+
+    deregister_sub_ = create_subscription<std_msgs::msg::String>(
+      "/deregister_node", qos, [this](const std_msgs::msg::String::SharedPtr msg) {
+        handle_deregister_node(msg->data);
+      });
+
+    add_dashboard_node("Node 1 / LiDAR", "/node1/heartbeat", 0.75);
+    add_dashboard_node("Node 2 / Speed", "/node2/heartbeat", 2.0);
+    add_dashboard_node("Node 3 / Safety", "/node3/heartbeat", 1.0);
+    add_dashboard_node("Camera Node", "/node6/heartbeat", 1.5);
+    add_dashboard_node("Network Monitor", "/node8/heartbeat", 10.0);
 
     running_ = true;
     server_thread_ = std::thread(&WebServerNode::server_loop, this);
@@ -189,6 +258,8 @@ private:
     std::string backup_health = "WAITING_FOR_BACKUP_MONITOR";
     std::string backup_reason = "NONE";
     std::string camera_status = "WAITING_FOR_CAMERA";
+    std::string network_status = "WAITING_FOR_NETWORK";
+    std::string network_reason = "NONE";
 
     rclcpp::Time last_data_a;
     rclcpp::Time last_data_b;
@@ -197,23 +268,27 @@ private:
     rclcpp::Time last_primary_health;
     rclcpp::Time last_backup_health;
     rclcpp::Time last_camera;
-    rclcpp::Time last_heartbeat[4];
-    bool received_heartbeat[4] = {false, false, false, false};
+    rclcpp::Time last_network;
   };
 
-  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr make_heartbeat_sub(
-    const std::string & topic,
-    const size_t index)
+  struct DashboardNode
   {
-    return create_subscription<std_msgs::msg::String>(
-      topic,
-      rclcpp::QoS(rclcpp::KeepLast(10)).reliable(),
-      [this, index](const std_msgs::msg::String::SharedPtr) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        state_.received_heartbeat[index] = true;
-        state_.last_heartbeat[index] = now();
-      });
-  }
+    std::string name;
+    std::string topic;
+    double timeout_seconds = 2.0;
+    bool received = false;
+    bool deregistered = false;
+    rclcpp::Time last_heartbeat;
+    rclcpp::Subscription<std_msgs::msg::String>::SharedPtr subscription;
+  };
+
+  struct TestNodeControl
+  {
+    std::string id;
+    std::string label;
+    std::string registration;
+    std::string topic;
+  };
 
   double age_seconds(const rclcpp::Time & stamp) const
   {
@@ -243,20 +318,247 @@ private:
     return age >= 0.0 && age <= timeout_seconds;
   }
 
-  std::string node_json(
+  bool monitor_fresh(const rclcpp::Time & stamp) const
+  {
+    return fresh(stamp, monitor_timeout_seconds_);
+  }
+
+  void add_dashboard_node(
     const std::string & name,
     const std::string & topic,
-    const rclcpp::Time & heartbeat,
-    const bool received,
-    const double timeout_seconds) const
+    const double timeout_seconds)
   {
-    const bool ok = received && fresh(heartbeat, timeout_seconds);
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    auto existing = std::find_if(
+      dashboard_nodes_.begin(),
+      dashboard_nodes_.end(),
+      [&](const std::shared_ptr<DashboardNode> & node) {
+        return node->topic == topic;
+      });
+
+    if (existing != dashboard_nodes_.end())
+    {
+      (*existing)->name = name;
+      (*existing)->timeout_seconds = timeout_seconds;
+      (*existing)->deregistered = false;
+      return;
+    }
+
+    auto node = std::make_shared<DashboardNode>();
+    node->name = name;
+    node->topic = topic;
+    node->timeout_seconds = timeout_seconds;
+
+    node->subscription = create_subscription<std_msgs::msg::String>(
+      topic,
+      rclcpp::QoS(rclcpp::KeepLast(10)).reliable(),
+      [this, node](const std_msgs::msg::String::SharedPtr) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (node->deregistered) {
+          return;
+        }
+
+        node->received = true;
+        node->last_heartbeat = now();
+      });
+
+    dashboard_nodes_.push_back(node);
+  }
+
+  void handle_register_node(const std::string & registration)
+  {
+    std::stringstream ss(registration);
+
+    std::string name;
+    std::string topic;
+    std::string deadline_ms;
+    std::string liveliness_ms;
+    std::string failure_reason;
+
+    std::getline(ss, name, ',');
+    std::getline(ss, topic, ',');
+    std::getline(ss, deadline_ms, ',');
+    std::getline(ss, liveliness_ms, ',');
+    std::getline(ss, failure_reason, ',');
+
+    if (name.empty() || topic.empty()) {
+      RCLCPP_WARN(get_logger(), "Ignoring invalid dashboard registration: %s", registration.c_str());
+      return;
+    }
+
+    if (is_test_node_topic(topic) && !is_test_node_enabled(topic)) {
+      return;
+    }
+
+    double timeout_seconds = 2.0;
+
+    try
+    {
+      if (!liveliness_ms.empty()) {
+        timeout_seconds = std::stod(liveliness_ms) / 1000.0;
+      } else if (!deadline_ms.empty()) {
+        timeout_seconds = std::stod(deadline_ms) / 1000.0;
+      }
+    }
+    catch (const std::exception &)
+    {
+      RCLCPP_WARN(
+        get_logger(),
+        "Using default dashboard timeout for invalid registration: %s",
+        registration.c_str());
+    }
+
+    add_dashboard_node(name, topic, timeout_seconds);
+  }
+
+  void handle_deregister_node(const std::string & topic)
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    auto existing = std::find_if(
+      dashboard_nodes_.begin(),
+      dashboard_nodes_.end(),
+      [&](const std::shared_ptr<DashboardNode> & node) {
+        return node->topic == topic;
+      });
+
+    if (existing != dashboard_nodes_.end()) {
+      if (is_test_node_topic(topic)) {
+        dashboard_nodes_.erase(existing);
+      } else {
+        (*existing)->deregistered = true;
+      }
+    }
+  }
+
+  std::string node_json(const DashboardNode & node) const
+  {
+    const bool ok = !node.deregistered && node.received &&
+      fresh(node.last_heartbeat, node.timeout_seconds);
     std::ostringstream out;
-    out << "{\"name\":\"" << escape_json(name)
-        << "\",\"topic\":\"" << escape_json(topic)
-        << "\",\"status\":\"" << (ok ? "OK" : "STALE")
-        << "\",\"age_seconds\":" << age_json(heartbeat) << "}";
+    out << "{\"name\":\"" << escape_json(node.name)
+        << "\",\"topic\":\"" << escape_json(node.topic)
+        << "\",\"status\":\"" << (node.deregistered ? "DEREGISTERED" : (ok ? "OK" : "STALE"))
+        << "\",\"age_seconds\":" << age_json(node.last_heartbeat) << "}";
     return out.str();
+  }
+
+  bool is_test_node_topic(const std::string & topic) const
+  {
+    return std::any_of(
+      test_node_controls_.begin(),
+      test_node_controls_.end(),
+      [&](const TestNodeControl & node) {
+        return node.topic == topic;
+      });
+  }
+
+  bool is_test_node_enabled(const std::string & topic) const
+  {
+    std::lock_guard<std::mutex> lock(test_node_mutex_);
+
+    return std::find(
+      enabled_test_node_topics_.begin(),
+      enabled_test_node_topics_.end(),
+      topic) != enabled_test_node_topics_.end();
+  }
+
+  void set_test_node_enabled(const std::string & topic, const bool enabled)
+  {
+    std::lock_guard<std::mutex> lock(test_node_mutex_);
+
+    auto existing = std::find(
+      enabled_test_node_topics_.begin(),
+      enabled_test_node_topics_.end(),
+      topic);
+
+    if (enabled && existing == enabled_test_node_topics_.end()) {
+      enabled_test_node_topics_.push_back(topic);
+    } else if (!enabled && existing != enabled_test_node_topics_.end()) {
+      enabled_test_node_topics_.erase(existing);
+    }
+  }
+
+  const TestNodeControl * find_test_node_control(const std::string & id) const
+  {
+    auto existing = std::find_if(
+      test_node_controls_.begin(),
+      test_node_controls_.end(),
+      [&](const TestNodeControl & node) {
+        return node.id == id;
+      });
+
+    if (existing == test_node_controls_.end()) {
+      return nullptr;
+    }
+
+    return &(*existing);
+  }
+
+  void publish_register_test_node(const TestNodeControl & node)
+  {
+    std_msgs::msg::String msg;
+    msg.data = node.registration;
+    set_test_node_enabled(node.topic, true);
+    register_pub_->publish(msg);
+    handle_register_node(msg.data);
+  }
+
+  void publish_deregister_test_node(const TestNodeControl & node)
+  {
+    std_msgs::msg::String msg;
+    msg.data = node.topic;
+    set_test_node_enabled(node.topic, false);
+    deregister_pub_->publish(msg);
+    handle_deregister_node(msg.data);
+  }
+
+  bool handle_test_node_route(const std::string & path, const int client_fd)
+  {
+    const std::string prefix = "/api/test-node/";
+
+    if (path.rfind(prefix, 0) != 0) {
+      return false;
+    }
+
+    const std::string remainder = path.substr(prefix.size());
+    const size_t slash = remainder.find('/');
+
+    if (slash == std::string::npos) {
+      send_response(client_fd, "404 Not Found", "application/json", "{\"error\":\"not_found\"}");
+      return true;
+    }
+
+    const std::string id = remainder.substr(0, slash);
+    const std::string action = remainder.substr(slash + 1);
+    const TestNodeControl * node = find_test_node_control(id);
+
+    if (node == nullptr) {
+      send_response(client_fd, "404 Not Found", "application/json", "{\"error\":\"unknown_test_node\"}");
+      return true;
+    }
+
+    if (action == "register")
+    {
+      publish_register_test_node(*node);
+      std::ostringstream body;
+      body << "{\"ok\":true,\"message\":\"" << escape_json(node->label) << " monitor enabled\"}";
+      send_response(client_fd, "200 OK", "application/json", body.str());
+      return true;
+    }
+
+    if (action == "deregister")
+    {
+      publish_deregister_test_node(*node);
+      std::ostringstream body;
+      body << "{\"ok\":true,\"message\":\"" << escape_json(node->label) << " monitor disabled\"}";
+      send_response(client_fd, "200 OK", "application/json", body.str());
+      return true;
+    }
+
+    send_response(client_fd, "404 Not Found", "application/json", "{\"error\":\"unknown_action\"}");
+    return true;
   }
 
   std::string final_action(const DashboardState & state) const
@@ -282,20 +584,38 @@ private:
     std::lock_guard<std::mutex> lock(mutex_);
     const auto state = state_;
     const std::string action = final_action(state);
+    const bool primary_monitor_online = monitor_fresh(state.last_primary_health);
+    const bool backup_monitor_online = monitor_fresh(state.last_backup_health);
+    const std::string primary_health =
+      primary_monitor_online ? state.primary_health : "MONITOR_OFFLINE";
+    const std::string primary_reason =
+      primary_monitor_online ? state.primary_reason : "NO_PRIMARY_HEALTH_UPDATE";
+    const std::string backup_health =
+      backup_monitor_online ? state.backup_health : "MONITOR_OFFLINE";
+    const std::string backup_reason =
+      backup_monitor_online ? state.backup_reason : "NO_BACKUP_HEALTH_UPDATE";
 
     std::ostringstream out;
     out << std::fixed << std::setprecision(2);
     out << "{";
     out << "\"system_status\":\"" << escape_json(state.system_status) << "\",";
     out << "\"system_class\":\"" << status_class(state.system_status) << "\",";
-    out << "\"primary_health\":\"" << escape_json(state.primary_health) << "\",";
-    out << "\"primary_reason\":\"" << escape_json(state.primary_reason) << "\",";
-    out << "\"primary_class\":\"" << status_class(state.primary_health) << "\",";
-    out << "\"backup_health\":\"" << escape_json(state.backup_health) << "\",";
-    out << "\"backup_reason\":\"" << escape_json(state.backup_reason) << "\",";
-    out << "\"backup_class\":\"" << status_class(state.backup_health) << "\",";
+    out << "\"primary_health\":\"" << escape_json(primary_health) << "\",";
+    out << "\"primary_reason\":\"" << escape_json(primary_reason) << "\",";
+    out << "\"primary_class\":\"" << status_class(primary_health) << "\",";
+    out << "\"backup_health\":\"" << escape_json(backup_health) << "\",";
+    out << "\"backup_reason\":\"" << escape_json(backup_reason) << "\",";
+    out << "\"backup_class\":\"" << status_class(backup_health) << "\",";
     out << "\"camera_status\":\"" << escape_json(state.camera_status) << "\",";
     out << "\"camera_age_seconds\":" << age_json(state.last_camera) << ",";
+    out << "\"network_status\":\"" << escape_json(state.network_status) << "\",";
+    out << "\"network_reason\":\"" << escape_json(state.network_reason) << "\",";
+    out << "\"network_wifi\":\"" << escape_json(network_state_value(state.network_reason, "WIFI")) << "\",";
+    out << "\"network_lte\":\"" << escape_json(network_state_value(state.network_reason, "LTE")) << "\",";
+    out << "\"network_starlink\":\"" << escape_json(network_state_value(state.network_reason, "STARLINK")) << "\",";
+    out << "\"network_active\":\"" << escape_json(network_state_value(state.network_reason, "ACTIVE_CONNECTION")) << "\",";
+    out << "\"network_class\":\"" << status_class(state.network_status) << "\",";
+    out << "\"network_age_seconds\":" << age_json(state.last_network) << ",";
     out << "\"distance\":" << (state.received_distance ? std::to_string(state.distance) : "null") << ",";
     out << "\"normal_speed\":" << (state.received_speed_input ? std::to_string(state.normal_speed) : "null") << ",";
     out << "\"adjusted_speed\":" << (state.received_adjusted_speed ? std::to_string(state.adjusted_speed) : "null") << ",";
@@ -310,10 +630,14 @@ private:
     out << "\"backup_health\":" << age_json(state.last_backup_health);
     out << "},";
     out << "\"nodes\":[";
-    out << node_json("Node 1 / LiDAR", "/node1/heartbeat", state.last_heartbeat[0], state.received_heartbeat[0], 0.75) << ",";
-    out << node_json("Node 2 / Speed", "/node2/heartbeat", state.last_heartbeat[1], state.received_heartbeat[1], 2.0) << ",";
-    out << node_json("Node 3 / Safety", "/node3/heartbeat", state.last_heartbeat[2], state.received_heartbeat[2], 1.0) << ",";
-    out << node_json("Camera Node", "/node6/heartbeat", state.last_heartbeat[3], state.received_heartbeat[3], 1.5);
+    for (size_t i = 0; i < dashboard_nodes_.size(); ++i)
+    {
+      if (i > 0) {
+        out << ",";
+      }
+
+      out << node_json(*dashboard_nodes_[i]);
+    }
     out << "]";
     out << "}";
     return out.str();
@@ -385,14 +709,56 @@ private:
       border-radius: 6px;
       padding: 12px;
     }
+    .network-row { margin-top: 12px; }
     .metric strong { display: block; font-size: 12px; color: #5c6f8a; margin-bottom: 5px; }
     .metric span { font-size: 21px; font-weight: 800; }
+    .speed-bar {
+      width: 100%;
+      height: 12px;
+      margin-top: 10px;
+      overflow: hidden;
+      border-radius: 999px;
+      background: #dfe7f2;
+      border: 1px solid #c9d5e5;
+    }
+    .speed-fill {
+      width: 0%;
+      height: 100%;
+      border-radius: inherit;
+      background: linear-gradient(90deg, #1b998b, #f2c14e, #e84855);
+      transition: width 220ms ease;
+    }
+    .controls { display: flex; flex-wrap: wrap; gap: 10px; }
+    .test-node-controls { display: grid; gap: 10px; }
+    .test-node-control {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 0;
+      border-bottom: 1px solid #e7edf5;
+    }
+    .test-node-control:last-child { border-bottom: 0; }
+    .test-node-control span { font-weight: 700; }
+    button {
+      border: 1px solid #b9c6d8;
+      border-radius: 6px;
+      background: #ffffff;
+      color: #172033;
+      cursor: pointer;
+      font: inherit;
+      font-size: 14px;
+      font-weight: 700;
+      padding: 9px 12px;
+    }
+    button:hover { background: #edf3fa; }
     @media (max-width: 900px) {
       header { align-items: flex-start; flex-direction: column; padding: 16px; }
       main { padding: 16px; }
       .grid { grid-template-columns: 1fr; }
       .wide { grid-column: span 1; }
       .metric-row { grid-template-columns: 1fr; }
+      .test-node-control { align-items: flex-start; flex-direction: column; }
     }
   </style>
 </head>
@@ -407,6 +773,9 @@ private:
         <h2>Final Action</h2>
         <div id="finalAction" class="value">WAITING</div>
         <div id="adjustedSpeed" class="subvalue">Adjusted speed: --</div>
+        <div class="speed-bar" aria-label="Adjusted speed bar">
+          <div id="adjustedSpeedFill" class="speed-fill"></div>
+        </div>
       </article>
       <article class="panel">
         <h2>System Status</h2>
@@ -429,9 +798,67 @@ private:
         <h2>Live Inputs</h2>
         <div class="metric-row">
           <div class="metric"><strong>LiDAR Distance</strong><span id="distance">--</span></div>
-          <div class="metric"><strong>Normal Speed</strong><span id="normalSpeed">--</span></div>
+          <div class="metric">
+            <strong>Normal Speed</strong>
+            <span id="normalSpeed">--</span>
+            <div class="speed-bar" aria-label="Normal speed bar">
+              <div id="normalSpeedFill" class="speed-fill"></div>
+            </div>
+          </div>
           <div class="metric"><strong>Camera</strong><span id="cameraStatus">--</span></div>
         </div>
+      </article>
+      <article class="panel wide">
+        <h2>Network</h2>
+        <div id="networkStatus" class="value">--</div>
+        <div id="networkActive" class="subvalue">Active connection: --</div>
+        <div id="networkAge" class="subvalue">Age: --</div>
+        <div class="metric-row network-row">
+          <div class="metric"><strong>WiFi</strong><span id="networkWifi">--</span></div>
+          <div class="metric"><strong>LTE</strong><span id="networkLte">--</span></div>
+          <div class="metric"><strong>Starlink</strong><span id="networkStarlink">--</span></div>
+        </div>
+      </article>
+      <article class="panel wide">
+        <h2>Test Node Monitors</h2>
+        <div class="test-node-controls">
+          <div class="test-node-control">
+            <span>Node 7</span>
+            <div class="controls">
+              <button type="button" data-node-id="node7" data-action="register">Enable</button>
+              <button type="button" data-node-id="node7" data-action="deregister">Disable</button>
+            </div>
+          </div>
+          <div class="test-node-control">
+            <span>Node 9</span>
+            <div class="controls">
+              <button type="button" data-node-id="node9" data-action="register">Enable</button>
+              <button type="button" data-node-id="node9" data-action="deregister">Disable</button>
+            </div>
+          </div>
+          <div class="test-node-control">
+            <span>Node 10</span>
+            <div class="controls">
+              <button type="button" data-node-id="node10" data-action="register">Enable</button>
+              <button type="button" data-node-id="node10" data-action="deregister">Disable</button>
+            </div>
+          </div>
+          <div class="test-node-control">
+            <span>Node 11</span>
+            <div class="controls">
+              <button type="button" data-node-id="node11" data-action="register">Enable</button>
+              <button type="button" data-node-id="node11" data-action="deregister">Disable</button>
+            </div>
+          </div>
+          <div class="test-node-control">
+            <span>Node 12</span>
+            <div class="controls">
+              <button type="button" data-node-id="node12" data-action="register">Enable</button>
+              <button type="button" data-node-id="node12" data-action="deregister">Disable</button>
+            </div>
+          </div>
+        </div>
+        <div id="nodeControlStatus" class="subvalue">--</div>
       </article>
       <article class="panel wide">
         <h2>Heartbeat State</h2>
@@ -447,6 +874,7 @@ private:
       connection: document.getElementById('connection'),
       finalAction: document.getElementById('finalAction'),
       adjustedSpeed: document.getElementById('adjustedSpeed'),
+      adjustedSpeedFill: document.getElementById('adjustedSpeedFill'),
       systemStatus: document.getElementById('systemStatus'),
       systemAge: document.getElementById('systemAge'),
       primaryHealth: document.getElementById('primaryHealth'),
@@ -457,7 +885,15 @@ private:
       backupAge: document.getElementById('backupAge'),
       distance: document.getElementById('distance'),
       normalSpeed: document.getElementById('normalSpeed'),
+      normalSpeedFill: document.getElementById('normalSpeedFill'),
       cameraStatus: document.getElementById('cameraStatus'),
+      networkStatus: document.getElementById('networkStatus'),
+      networkActive: document.getElementById('networkActive'),
+      networkAge: document.getElementById('networkAge'),
+      networkWifi: document.getElementById('networkWifi'),
+      networkLte: document.getElementById('networkLte'),
+      networkStarlink: document.getElementById('networkStarlink'),
+      nodeControlStatus: document.getElementById('nodeControlStatus'),
       nodeRows: document.getElementById('nodeRows')
     };
 
@@ -469,11 +905,19 @@ private:
       el.className = `value ${cls}`;
     }
 
+    function setSpeedBar(el, value) {
+      const maxSpeed = 0.7;
+      const safeValue = value === null || value === undefined ? 0 : Number(value);
+      const percent = Math.max(0, Math.min(100, (safeValue / maxSpeed) * 100));
+      el.style.width = `${percent}%`;
+    }
+
     function render(data) {
       fields.connection.textContent = `Live at ${new Date().toLocaleTimeString()}`;
       fields.finalAction.textContent = data.final_action;
       setClass(fields.finalAction, data.action_class);
       fields.adjustedSpeed.textContent = `Adjusted speed: ${fmt(data.adjusted_speed, ' m/s')}`;
+      setSpeedBar(fields.adjustedSpeedFill, data.adjusted_speed);
 
       fields.systemStatus.textContent = data.system_status;
       setClass(fields.systemStatus, data.system_class);
@@ -491,10 +935,18 @@ private:
 
       fields.distance.textContent = fmt(data.distance, ' m');
       fields.normalSpeed.textContent = fmt(data.normal_speed, ' m/s');
+      setSpeedBar(fields.normalSpeedFill, data.normal_speed);
       fields.cameraStatus.textContent = data.camera_status;
+      fields.networkStatus.textContent = data.network_status;
+      setClass(fields.networkStatus, data.network_class);
+      fields.networkActive.textContent = `Active connection: ${data.network_active}`;
+      fields.networkAge.textContent = `Age: ${fmt(data.network_age_seconds, ' s')}`;
+      fields.networkWifi.textContent = data.network_wifi;
+      fields.networkLte.textContent = data.network_lte;
+      fields.networkStarlink.textContent = data.network_starlink;
 
       fields.nodeRows.innerHTML = data.nodes.map((node) => {
-        const cls = node.status === 'OK' ? 'ok' : 'danger';
+        const cls = node.status === 'OK' ? 'ok' : (node.status === 'DEREGISTERED' ? 'warn' : 'danger');
         return `<tr><td>${node.name}</td><td>${node.topic}</td><td class="${cls}">${node.status}</td><td>${fmt(node.age_seconds, ' s')}</td></tr>`;
       }).join('');
     }
@@ -507,6 +959,27 @@ private:
         fields.connection.textContent = 'Connection lost, retrying...';
       };
     }
+
+    function sendNodeControl(path, label) {
+      fields.nodeControlStatus.textContent = `${label}...`;
+      fetch(path)
+        .then((response) => response.json())
+        .then((data) => {
+          fields.nodeControlStatus.textContent = data.message;
+        })
+        .catch(() => {
+          fields.nodeControlStatus.textContent = 'Command failed';
+        });
+    }
+
+    document.querySelectorAll('[data-node-id][data-action]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const nodeId = button.dataset.nodeId;
+        const action = button.dataset.action;
+        const label = `${action === 'register' ? 'Enabling' : 'Disabling'} ${button.closest('.test-node-control').querySelector('span').textContent} monitor`;
+        sendNodeControl(`/api/test-node/${nodeId}/${action}`, label);
+      });
+    });
 
     fetch('/api/status').then((response) => response.json()).then(render).catch(() => {});
     connect();
@@ -602,6 +1075,33 @@ private:
     {
       send_response(client_fd, "200 OK", "application/json", state_json());
     }
+    else if (handle_test_node_route(path, client_fd))
+    {
+    }
+    else if (path == "/api/node7/register")
+    {
+      const TestNodeControl * node = find_test_node_control("node7");
+      if (node != nullptr) {
+        publish_register_test_node(*node);
+      }
+      send_response(
+        client_fd,
+        "200 OK",
+        "application/json",
+        "{\"ok\":true,\"message\":\"Node 7 monitor enabled\"}");
+    }
+    else if (path == "/api/node7/deregister")
+    {
+      const TestNodeControl * node = find_test_node_control("node7");
+      if (node != nullptr) {
+        publish_deregister_test_node(*node);
+      }
+      send_response(
+        client_fd,
+        "200 OK",
+        "application/json",
+        "{\"ok\":true,\"message\":\"Node 7 monitor disabled\"}");
+    }
     else if (path == "/events")
     {
       handle_events(client_fd);
@@ -671,10 +1171,12 @@ private:
 
   int port_ = 8080;
   int server_fd_ = -1;
+  const double monitor_timeout_seconds_ = 3.0;
   std::atomic<bool> running_{false};
   std::thread server_thread_;
 
   std::mutex mutex_;
+  mutable std::mutex test_node_mutex_;
   DashboardState state_;
 
   rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr data_a_sub_;
@@ -686,10 +1188,21 @@ private:
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr backup_health_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr backup_reason_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr camera_sub_;
-  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr node1_heartbeat_sub_;
-  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr node2_heartbeat_sub_;
-  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr node3_heartbeat_sub_;
-  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr node6_heartbeat_sub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr network_status_sub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr network_reason_sub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr register_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr deregister_pub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr register_sub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr deregister_sub_;
+  std::vector<std::shared_ptr<DashboardNode>> dashboard_nodes_;
+  std::vector<std::string> enabled_test_node_topics_;
+  const std::vector<TestNodeControl> test_node_controls_ = {
+    {"node7", "Node 7", "Node 7,/node7/heartbeat,500,1000,NODE7_FAILURE", "/node7/heartbeat"},
+    {"node9", "Node 9", "Node 9,/node9/heartbeat,1000,2000,NODE9_QOS_TEST_FAILURE", "/node9/heartbeat"},
+    {"node10", "Node 10", "Node 10,/node10/heartbeat,500,1000,NODE10_BAD_QOS_FAILURE", "/node10/heartbeat"},
+    {"node11", "Node 11", "Node 11,/node11/heartbeat,500,,NODE11_DEADLINE_FAILURE", "/node11/heartbeat"},
+    {"node12", "Node 12", "Node 12,/node12/heartbeat,,1000,NODE12_LIVELINESS_FAILURE", "/node12/heartbeat"},
+  };
 };
 
 int main(int argc, char * argv[])

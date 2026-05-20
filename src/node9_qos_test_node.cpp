@@ -22,8 +22,6 @@ public:
     heartbeat_pub_ =
       this->create_publisher<std_msgs::msg::String>("/node9/heartbeat", qos);
 
-    register_pub_ =
-      this->create_publisher<std_msgs::msg::String>("/register_node", 10);
     deregister_pub_ =
       this->create_publisher<std_msgs::msg::String>("/deregister_node",10);
     shutdown_sub_ =
@@ -45,14 +43,6 @@ public:
 private:
   void timer_callback()
   {
-    if (registration_count_ < 5)
-    {
-      std_msgs::msg::String register_msg;
-      register_msg.data = "Node 9,/node9/heartbeat,1000,2000,NODE9_QOS_TEST_FAILURE";
-      register_pub_->publish(register_msg);
-      registration_count_++;
-    }
-
     std_msgs::msg::String heartbeat_msg;
     heartbeat_msg.data = "node9 alive";
 
@@ -89,12 +79,9 @@ private:
 }
 
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr heartbeat_pub_;
-  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr register_pub_;
   rclcpp::TimerBase::SharedPtr timer_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr deregister_pub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr shutdown_sub_;
-
-  int registration_count_ = 0;
 };
 
 int main(int argc, char * argv[])

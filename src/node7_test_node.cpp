@@ -21,28 +21,16 @@ public:
     heartbeat_pub_ = this->create_publisher<std_msgs::msg::String>(
       "/node7/heartbeat", qos);
 
-    register_pub_ = this->create_publisher<std_msgs::msg::String>(
-      "/register_node", 10);
-
     timer_ = this->create_wall_timer(
       500ms,
       std::bind(&Node7Test::timer_callback, this));
 
-    RCLCPP_INFO(this->get_logger(), "Node 7 started and sending registration");
+    RCLCPP_INFO(this->get_logger(), "Node 7 started and publishing heartbeat");
   }
 
 private:
   void timer_callback()
   {
-    if (registration_count_ < 5)
-    {
-      std_msgs::msg::String register_msg;
-      register_msg.data = "Node 7,/node7/heartbeat,500,1000,NODE7_FAILURE";
-      register_pub_->publish(register_msg);
-
-      registration_count_++;
-    }
-
     std_msgs::msg::String heartbeat_msg;
     heartbeat_msg.data = "node7 alive";
 
@@ -51,11 +39,8 @@ private:
   }
 
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr heartbeat_pub_;
-  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr register_pub_;
 
   rclcpp::TimerBase::SharedPtr timer_;
-
-  int registration_count_ = 0;
 };
 
 int main(int argc, char * argv[])

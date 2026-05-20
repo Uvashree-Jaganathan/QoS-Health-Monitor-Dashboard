@@ -22,3 +22,9 @@ nodes:
     deadline_ms: 1200
     liveliness_ms: 2000
     failure_reason: CAMERA_NODE_FAILURE
+
+  - name: Network Monitor Node
+    heartbeat_topic: /node8/heartbeat
+    deadline_ms: 5000
+    liveliness_ms: 10000
+    failure_reason: NETWORK_MONITOR_FAILURE
