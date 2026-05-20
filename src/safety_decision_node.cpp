@@ -33,6 +33,9 @@ public:
     camera_qos.liveliness(RMW_QOS_POLICY_LIVELINESS_MANUAL_BY_TOPIC);
     camera_qos.liveliness_lease_duration(2000ms);
 
+    auto status_input_qos = rclcpp::QoS(rclcpp::KeepLast(10));
+    status_input_qos.reliable();
+
     auto node3_qos = rclcpp::QoS(rclcpp::KeepLast(10));
     node3_qos.reliable();
     node3_qos.deadline(200ms);
@@ -102,6 +105,21 @@ public:
       std::bind(&SafetyDecisionNode::camera_callback, this, std::placeholders::_1),
       camera_options);
 
+    battery_percentage_sub_ = this->create_subscription<std_msgs::msg::Float32>(
+      "/battery_percentage",
+      status_input_qos,
+      std::bind(&SafetyDecisionNode::battery_percentage_callback, this, std::placeholders::_1));
+
+    battery_status_sub_ = this->create_subscription<std_msgs::msg::String>(
+      "/battery_status",
+      status_input_qos,
+      std::bind(&SafetyDecisionNode::battery_status_callback, this, std::placeholders::_1));
+
+    network_status_sub_ = this->create_subscription<std_msgs::msg::String>(
+      "/network_status",
+      status_input_qos,
+      std::bind(&SafetyDecisionNode::network_status_callback, this, std::placeholders::_1));
+
     status_pub_ = this->create_publisher<std_msgs::msg::String>("/system_status", node3_qos);
     speed_pub_ = this->create_publisher<std_msgs::msg::Float32>("/adjusted_speed", node3_qos);
     heartbeat_pub_ = this->create_publisher<std_msgs::msg::String>("/node3/heartbeat", node3_qos);
@@ -132,6 +150,24 @@ private:
     camera_ok_ = true;
   }
 
+  void battery_percentage_callback(const std_msgs::msg::Float32::SharedPtr msg)
+  {
+    battery_percentage_ = msg->data;
+    battery_ok_ = true;
+  }
+
+  void battery_status_callback(const std_msgs::msg::String::SharedPtr msg)
+  {
+    battery_status_ = msg->data;
+    battery_ok_ = true;
+  }
+
+  void network_status_callback(const std_msgs::msg::String::SharedPtr msg)
+  {
+    network_status_ = msg->data;
+    network_ok_ = true;
+  }
+
   std::string format_float(float value)
   {
     std::ostringstream stream;
@@ -146,15 +182,38 @@ private:
     std_msgs::msg::String status_msg;
     std_msgs::msg::Float32 speed_msg;
 
-    if (!node1_ok_ || !node2_ok_ || !camera_ok_)
+    if (!node1_ok_ || !node2_ok_ || !camera_ok_ || !battery_ok_ || !network_ok_)
     {
       speed_msg.data = 0.0f;
       status_msg.data = "UNSAFE_STOP";
     }
+    else if (battery_status_ == "EMERGENCY_BATTERY")
+    {
+      speed_msg.data = 0.0f;
+      status_msg.data = "EMERGENCY_BATTERY_SAFE_LANDING";
+    }
+    else if (network_status_ == "RETURN_TO_BASE")
+    {
+      speed_msg.data = normal_speed_ * 0.35f;
+      status_msg.data = "NETWORK_RETURN_TO_BASE";
+    }
+    else if (battery_status_ == "CRITICAL_BATTERY")
+    {
+      speed_msg.data = normal_speed_ * 0.4f;
+      status_msg.data = "CRITICAL_BATTERY_RETURN_TO_BASE";
+    }
     else if (distance_ >= safety_radius)
     {
-      speed_msg.data = normal_speed_;
-      status_msg.data = "SAFE_NORMAL_SPEED";
+      if (battery_status_ == "LOW_BATTERY")
+      {
+        speed_msg.data = normal_speed_ * 0.7f;
+        status_msg.data = "LOW_BATTERY_REDUCE_SPEED";
+      }
+      else
+      {
+        speed_msg.data = normal_speed_;
+        status_msg.data = "SAFE_NORMAL_SPEED";
+      }
     }
     else
     {
@@ -175,6 +234,8 @@ private:
     std::string node1_output;
     std::string node2_output;
     std::string node6_output;
+    std::string battery_output;
+    std::string network_output;
 
     if (node1_ok_)
     {
@@ -203,12 +264,33 @@ private:
       node6_output = "Node 6: FAILED CAMERA_FAILURE";
     }
 
+    if (battery_ok_)
+    {
+      battery_output = "Node 13: Battery=" + format_float(battery_percentage_) +
+        "% Status=" + battery_status_;
+    }
+    else
+    {
+      battery_output = "Node 13: FAILED BATTERY_MONITOR_FAILURE";
+    }
+
+    if (network_ok_)
+    {
+      network_output = "Network=" + network_status_;
+    }
+    else
+    {
+      network_output = "Network=FAILED NETWORK_STATUS_MISSING";
+    }
+
     RCLCPP_INFO(
       this->get_logger(),
-      "%s | %s | %s | Node 3: Adjusted speed=%s , Status=%s",
+      "%s | %s | %s | %s | %s | Node 3: Adjusted speed=%s , Status=%s",
       node1_output.c_str(),
       node2_output.c_str(),
       node6_output.c_str(),
+      battery_output.c_str(),
+      network_output.c_str(),
       format_float(speed_msg.data).c_str(),
       status_msg.data.c_str());
   }
@@ -216,6 +298,9 @@ private:
   rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr data_a_sub_;
   rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr data_b_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr camera_sub_;
+  rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr battery_percentage_sub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr battery_status_sub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr network_status_sub_;
 
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr status_pub_;
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr speed_pub_;
@@ -225,12 +310,17 @@ private:
 
   float distance_ = 2.0f;
   float normal_speed_ = 0.5f;
+  float battery_percentage_ = 100.0f;
 
   std::string camera_status_ = "NO_OBSTACLE";
+  std::string battery_status_ = "BATTERY_NORMAL";
+  std::string network_status_ = "NETWORK_HEALTHY";
 
   bool node1_ok_ = false;
   bool node2_ok_ = false;
   bool camera_ok_ = false;
+  bool battery_ok_ = false;
+  bool network_ok_ = false;
 };
 
 int main(int argc, char * argv[])

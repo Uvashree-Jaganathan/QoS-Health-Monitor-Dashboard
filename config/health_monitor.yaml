@@ -28,3 +28,9 @@ nodes:
     deadline_ms: 5000
     liveliness_ms: 10000
     failure_reason: NETWORK_MONITOR_FAILURE
+
+  - name: Battery Node
+    heartbeat_topic: /node13/heartbeat
+    deadline_ms: 1500
+    liveliness_ms: 3000
+    failure_reason: BATTERY_MONITOR_FAILURE

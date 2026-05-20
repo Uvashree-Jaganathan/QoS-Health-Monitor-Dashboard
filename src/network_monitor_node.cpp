@@ -130,7 +130,7 @@ private:
       "FAILED:NO_SERVICE:RSRP_-126dBm",
       "FAILED:SATELLITE_OBSTRUCTED:SNR_1.4dB",
       "NONE",
-      "NETWORK_UNHEALTHY",
+      "RETURN_TO_BASE",
       distance_m
     };
   }
@@ -202,7 +202,7 @@ private:
     }
 
     if ((this->now() - network_loss_started_at_).seconds() >= network_loss_grace_seconds_) {
-      state.status = "NETWORK_UNHEALTHY";
+      state.status = "RETURN_TO_BASE";
     } else {
       state.status = "BACKUP_CONNECTION";
     }

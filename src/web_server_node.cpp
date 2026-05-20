@@ -61,6 +61,8 @@ std::string status_class(const std::string & value)
 {
   if (value.find("UNHEALTHY") != std::string::npos ||
       value.find("UNSAFE_STOP") != std::string::npos ||
+      value.find("EMERGENCY_BATTERY") != std::string::npos ||
+      value.find("SAFE_LANDING") != std::string::npos ||
       value == "STOP" ||
       value.find("FAILURE") != std::string::npos) {
     return "danger";
@@ -74,6 +76,9 @@ std::string status_class(const std::string & value)
 
   if (value.find("REDUCE") != std::string::npos ||
       value.find("USING_") != std::string::npos ||
+      value.find("RETURN_TO_BASE") != std::string::npos ||
+      value.find("LOW_BATTERY") != std::string::npos ||
+      value.find("CRITICAL_BATTERY") != std::string::npos ||
       value.find("BACKUP_CONNECTION") != std::string::npos ||
       value.find("DEGRADED") != std::string::npos) {
     return "warn";
@@ -111,6 +116,11 @@ std::string network_state_value(const std::string & reason, const std::string & 
   }
 
   return value.substr(0, detail_start);
+}
+
+bool network_only_failure(const std::string & reason)
+{
+  return reason == "NETWORK_CONNECTION_FAILURE";
 }
 }  // namespace
 
@@ -201,6 +211,21 @@ public:
         state_.network_reason = msg->data;
       });
 
+    battery_percentage_sub_ = create_subscription<std_msgs::msg::Float32>(
+      "/battery_percentage", qos, [this](const std_msgs::msg::Float32::SharedPtr msg) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        state_.battery_percentage = msg->data;
+        state_.received_battery = true;
+        state_.last_battery = now();
+      });
+
+    battery_status_sub_ = create_subscription<std_msgs::msg::String>(
+      "/battery_status", qos, [this](const std_msgs::msg::String::SharedPtr msg) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        state_.battery_status = msg->data;
+        state_.last_battery = now();
+      });
+
     register_pub_ = create_publisher<std_msgs::msg::String>("/register_node", qos);
     deregister_pub_ = create_publisher<std_msgs::msg::String>("/deregister_node", qos);
 
@@ -219,6 +244,7 @@ public:
     add_dashboard_node("Node 3 / Safety", "/node3/heartbeat", 1.0);
     add_dashboard_node("Camera Node", "/node6/heartbeat", 1.5);
     add_dashboard_node("Network Monitor", "/node8/heartbeat", 10.0);
+    add_dashboard_node("Battery Node", "/node13/heartbeat", 3.0);
 
     running_ = true;
     server_thread_ = std::thread(&WebServerNode::server_loop, this);
@@ -261,6 +287,9 @@ private:
     std::string camera_status = "WAITING_FOR_CAMERA";
     std::string network_status = "WAITING_FOR_NETWORK";
     std::string network_reason = "NONE";
+    std::string battery_status = "WAITING_FOR_BATTERY";
+    float battery_percentage = 0.0f;
+    bool received_battery = false;
 
     rclcpp::Time last_data_a;
     rclcpp::Time last_data_b;
@@ -270,6 +299,7 @@ private:
     rclcpp::Time last_backup_health;
     rclcpp::Time last_camera;
     rclcpp::Time last_network;
+    rclcpp::Time last_battery;
   };
 
   struct DashboardNode
@@ -565,14 +595,37 @@ private:
   std::string final_action(
     const DashboardState & state,
     const std::string & primary_health,
-    const std::string & backup_health) const
+    const std::string & primary_reason,
+    const std::string & backup_health,
+    const std::string & backup_reason) const
   {
-    if (primary_health != "HEALTHY" || backup_health != "HEALTHY" ||
-        state.system_status == "UNSAFE_STOP") {
+    if (primary_health != "HEALTHY" || backup_health != "HEALTHY")
+    {
+      if (primary_health == "UNHEALTHY" && backup_health == "UNHEALTHY" &&
+          network_only_failure(primary_reason) && network_only_failure(backup_reason)) {
+        return "RETURN_TO_BASE";
+      }
+
       return "STOP";
     }
 
+    if (state.system_status == "UNSAFE_STOP") {
+      return "STOP";
+    }
+
+    if (state.system_status == "EMERGENCY_BATTERY_SAFE_LANDING") {
+      return "SAFE_LANDING";
+    }
+
+    if (state.system_status.find("RETURN_TO_BASE") != std::string::npos) {
+      return "RETURN_TO_BASE";
+    }
+
     if (state.system_status.find("UNSAFE_REDUCE") != std::string::npos) {
+      return "REDUCE_SPEED";
+    }
+
+    if (state.system_status.find("LOW_BATTERY_REDUCE") != std::string::npos) {
       return "REDUCE_SPEED";
     }
 
@@ -597,7 +650,8 @@ private:
       backup_monitor_online ? state.backup_health : "MONITOR_OFFLINE";
     const std::string backup_reason =
       backup_monitor_online ? state.backup_reason : "NO_BACKUP_HEALTH_UPDATE";
-    const std::string action = final_action(state, primary_health, backup_health);
+    const std::string action =
+      final_action(state, primary_health, primary_reason, backup_health, backup_reason);
 
     std::ostringstream out;
     out << std::fixed << std::setprecision(2);
@@ -614,12 +668,19 @@ private:
     out << "\"camera_age_seconds\":" << age_json(state.last_camera) << ",";
     out << "\"network_status\":\"" << escape_json(state.network_status) << "\",";
     out << "\"network_reason\":\"" << escape_json(state.network_reason) << "\",";
+    out << "\"network_distance\":\"" <<
+      escape_json(network_reason_value(state.network_reason, "DISTANCE_FROM_BASE")) << "\",";
     out << "\"network_wifi\":\"" << escape_json(network_state_value(state.network_reason, "WIFI")) << "\",";
     out << "\"network_lte\":\"" << escape_json(network_state_value(state.network_reason, "LTE")) << "\",";
     out << "\"network_starlink\":\"" << escape_json(network_state_value(state.network_reason, "STARLINK")) << "\",";
     out << "\"network_active\":\"" << escape_json(network_state_value(state.network_reason, "ACTIVE_CONNECTION")) << "\",";
     out << "\"network_class\":\"" << status_class(state.network_status) << "\",";
     out << "\"network_age_seconds\":" << age_json(state.last_network) << ",";
+    out << "\"battery_status\":\"" << escape_json(state.battery_status) << "\",";
+    out << "\"battery_class\":\"" << status_class(state.battery_status) << "\",";
+    out << "\"battery_percentage\":" <<
+      (state.received_battery ? std::to_string(state.battery_percentage) : "null") << ",";
+    out << "\"battery_age_seconds\":" << age_json(state.last_battery) << ",";
     out << "\"distance\":" << (state.received_distance ? std::to_string(state.distance) : "null") << ",";
     out << "\"normal_speed\":" << (state.received_speed_input ? std::to_string(state.normal_speed) : "null") << ",";
     out << "\"adjusted_speed\":" << (state.received_adjusted_speed ? std::to_string(state.adjusted_speed) : "null") << ",";
@@ -774,14 +835,6 @@ private:
   <main>
     <section class="grid">
       <article class="panel">
-        <h2>Final Action</h2>
-        <div id="finalAction" class="value">WAITING</div>
-        <div id="adjustedSpeed" class="subvalue">Adjusted speed: --</div>
-        <div class="speed-bar" aria-label="Adjusted speed bar">
-          <div id="adjustedSpeedFill" class="speed-fill"></div>
-        </div>
-      </article>
-      <article class="panel">
         <h2>System Status</h2>
         <div id="systemStatus" class="value">--</div>
         <div id="systemAge" class="subvalue">Age: --</div>
@@ -809,12 +862,29 @@ private:
               <div id="normalSpeedFill" class="speed-fill"></div>
             </div>
           </div>
+          <div class="metric">
+            <strong>Adjusted Speed</strong>
+            <span id="adjustedSpeed">--</span>
+            <div class="speed-bar" aria-label="Adjusted speed bar">
+              <div id="adjustedSpeedFill" class="speed-fill"></div>
+            </div>
+          </div>
           <div class="metric"><strong>Camera</strong><span id="cameraStatus">--</span></div>
+        </div>
+      </article>
+      <article class="panel wide">
+        <h2>Battery</h2>
+        <div id="batteryStatus" class="value">--</div>
+        <div id="batteryPercent" class="subvalue">Charge: --</div>
+        <div id="batteryAge" class="subvalue">Age: --</div>
+        <div class="speed-bar" aria-label="Battery percentage bar">
+          <div id="batteryFill" class="speed-fill"></div>
         </div>
       </article>
       <article class="panel wide">
         <h2>Network</h2>
         <div id="networkStatus" class="value">--</div>
+        <div id="networkDistance" class="subvalue">Distance from base: --</div>
         <div id="networkActive" class="subvalue">Active connection: --</div>
         <div id="networkAge" class="subvalue">Age: --</div>
         <div class="metric-row network-row">
@@ -876,9 +946,6 @@ private:
   <script>
     const fields = {
       connection: document.getElementById('connection'),
-      finalAction: document.getElementById('finalAction'),
-      adjustedSpeed: document.getElementById('adjustedSpeed'),
-      adjustedSpeedFill: document.getElementById('adjustedSpeedFill'),
       systemStatus: document.getElementById('systemStatus'),
       systemAge: document.getElementById('systemAge'),
       primaryHealth: document.getElementById('primaryHealth'),
@@ -890,8 +957,15 @@ private:
       distance: document.getElementById('distance'),
       normalSpeed: document.getElementById('normalSpeed'),
       normalSpeedFill: document.getElementById('normalSpeedFill'),
+      adjustedSpeed: document.getElementById('adjustedSpeed'),
+      adjustedSpeedFill: document.getElementById('adjustedSpeedFill'),
       cameraStatus: document.getElementById('cameraStatus'),
+      batteryStatus: document.getElementById('batteryStatus'),
+      batteryPercent: document.getElementById('batteryPercent'),
+      batteryAge: document.getElementById('batteryAge'),
+      batteryFill: document.getElementById('batteryFill'),
       networkStatus: document.getElementById('networkStatus'),
+      networkDistance: document.getElementById('networkDistance'),
       networkActive: document.getElementById('networkActive'),
       networkAge: document.getElementById('networkAge'),
       networkWifi: document.getElementById('networkWifi'),
@@ -918,10 +992,6 @@ private:
 
     function render(data) {
       fields.connection.textContent = `Live at ${new Date().toLocaleTimeString()}`;
-      fields.finalAction.textContent = data.final_action;
-      setClass(fields.finalAction, data.action_class);
-      fields.adjustedSpeed.textContent = `Adjusted speed: ${fmt(data.adjusted_speed, ' m/s')}`;
-      setSpeedBar(fields.adjustedSpeedFill, data.adjusted_speed);
 
       fields.systemStatus.textContent = data.system_status;
       setClass(fields.systemStatus, data.system_class);
@@ -940,9 +1010,17 @@ private:
       fields.distance.textContent = fmt(data.distance, ' m');
       fields.normalSpeed.textContent = fmt(data.normal_speed, ' m/s');
       setSpeedBar(fields.normalSpeedFill, data.normal_speed);
+      fields.adjustedSpeed.textContent = fmt(data.adjusted_speed, ' m/s');
+      setSpeedBar(fields.adjustedSpeedFill, data.adjusted_speed);
       fields.cameraStatus.textContent = data.camera_status;
+      fields.batteryStatus.textContent = data.battery_status;
+      setClass(fields.batteryStatus, data.battery_class);
+      fields.batteryPercent.textContent = `Charge: ${fmt(data.battery_percentage, '%')}`;
+      fields.batteryAge.textContent = `Age: ${fmt(data.battery_age_seconds, ' s')}`;
+      fields.batteryFill.style.width = `${Math.max(0, Math.min(100, Number(data.battery_percentage || 0)))}%`;
       fields.networkStatus.textContent = data.network_status;
       setClass(fields.networkStatus, data.network_class);
+      fields.networkDistance.textContent = `Distance from base: ${data.network_distance}`;
       fields.networkActive.textContent = `Active connection: ${data.network_active}`;
       fields.networkAge.textContent = `Age: ${fmt(data.network_age_seconds, ' s')}`;
       fields.networkWifi.textContent = data.network_wifi;
@@ -1194,6 +1272,8 @@ private:
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr camera_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr network_status_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr network_reason_sub_;
+  rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr battery_percentage_sub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr battery_status_sub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr register_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr deregister_pub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr register_sub_;

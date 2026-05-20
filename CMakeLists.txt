@@ -50,6 +50,10 @@ ament_target_dependencies(web_server_node rclcpp std_msgs)
 add_executable(network_monitor_node src/network_monitor_node.cpp)
 ament_target_dependencies(network_monitor_node rclcpp std_msgs)
 
+# battery monitor Node
+add_executable(battery_node src/battery_node.cpp)
+ament_target_dependencies(battery_node rclcpp std_msgs)
+
 # supervisor Node
 add_executable(supervisor_node src/supervisor_node.cpp)
 ament_target_dependencies(supervisor_node rclcpp std_msgs)
@@ -93,6 +97,7 @@ install(TARGETS
   node12_qos_test_node
   supervisor_node
   network_monitor_node
+  battery_node
   
   DESTINATION lib/${PROJECT_NAME}
 )

@@ -254,7 +254,8 @@ private:
 
 void network_status_callback(const std_msgs::msg::String::SharedPtr msg)
   {
-    network_connection_healthy_ = (msg->data != "NETWORK_UNHEALTHY");
+    network_connection_healthy_ =
+      (msg->data == "NETWORK_HEALTHY" || msg->data == "BACKUP_CONNECTION");
     publish_health_status();
   }
 

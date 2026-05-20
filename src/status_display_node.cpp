@@ -105,6 +105,11 @@ private:
     return reason1 + "," + reason2;
   }
 
+  bool is_network_only_failure(const std::string & reason)
+  {
+    return reason == "NETWORK_CONNECTION_FAILURE";
+  }
+
   void timer_callback()
   {
     if (!received_system_ || !received_speed_) return;
@@ -165,9 +170,52 @@ private:
     {
       std::string final_reason = combine_reasons(health_reason_, backup_health_reason_);
 
+      if (is_network_only_failure(final_reason))
+      {
+        RCLCPP_WARN(this->get_logger(),
+          "\033[33mYELLOW | Health=UNHEALTHY | System=%s | Speed=%.2f | Action=RETURN_TO_BASE | Reason=%s\033[0m",
+          system_status_.c_str(),
+          adjusted_speed_,
+          final_reason.c_str());
+      }
+      else
+      {
+        RCLCPP_ERROR(this->get_logger(),
+          "\033[31mRED | Health=UNHEALTHY | System=UNSAFE_STOP | Speed=0.00 | Action=STOP | Reason=%s\033[0m",
+          final_reason.c_str());
+      }
+    }
+    else if (system_status_ == "EMERGENCY_BATTERY_SAFE_LANDING")
+    {
       RCLCPP_ERROR(this->get_logger(),
-        "\033[31mRED | Health=UNHEALTHY | System=UNSAFE_STOP | Speed=0.00 | Action=STOP | Reason=%s\033[0m",
-        final_reason.c_str());
+        "\033[31mRED | Health=HEALTHY | System=%s | Speed=0.00 | Action=SAFE_LANDING | Reason=EMERGENCY_BATTERY\033[0m",
+        system_status_.c_str());
+    }
+    else if (system_status_ == "NETWORK_RETURN_TO_BASE")
+    {
+      RCLCPP_WARN(this->get_logger(),
+        "\033[33mYELLOW | Health=HEALTHY | System=%s | Speed=%.2f | Action=RETURN_TO_BASE | Reason=NETWORK_CONNECTION_FAILURE\033[0m",
+        system_status_.c_str(),
+        adjusted_speed_);
+    }
+    else if (system_status_.find("RETURN_TO_BASE") != std::string::npos)
+    {
+      RCLCPP_WARN(this->get_logger(),
+        "\033[33mYELLOW | Health=HEALTHY | System=%s | Speed=%.2f | Action=RETURN_TO_BASE | Reason=CRITICAL_BATTERY\033[0m",
+        system_status_.c_str(),
+        adjusted_speed_);
+    }
+    else if (system_status_.find("LOW_BATTERY_REDUCE") != std::string::npos)
+    {
+      RCLCPP_WARN(this->get_logger(),
+        "\033[33mYELLOW | Health=HEALTHY | System=%s | Speed=%.2f | Action=REDUCE_SPEED | Reason=LOW_BATTERY\033[0m",
+        system_status_.c_str(),
+        adjusted_speed_);
+    }
+    else if (system_status_ == "UNSAFE_STOP")
+    {
+      RCLCPP_ERROR(this->get_logger(),
+        "\033[31mRED | Health=HEALTHY | System=UNSAFE_STOP | Speed=0.00 | Action=STOP | Reason=MISSING_REQUIRED_INPUT\033[0m");
     }
     else if (system_status_.find("UNSAFE") != std::string::npos)
     {

@@ -1,6 +1,4 @@
-#include <algorithm>
 #include <chrono>
-#include <cmath>
 #include <memory>
 
 #include "rclcpp/rclcpp.hpp"
@@ -27,35 +25,13 @@ public:
       100ms,
       std::bind(&SensorBNode::timer_callback, this));
 
-    demo_started_at_ = this->now();
-
-    RCLCPP_INFO(this->get_logger(), "Sensor B node started: publishing adaptive speed and heartbeat");
+    RCLCPP_INFO(this->get_logger(), "Sensor B node started: publishing constant normal speed and heartbeat");
   }
 
 private:
   float speed_for_demo()
   {
-    const double elapsed = std::fmod((this->now() - demo_started_at_).seconds(), 32.0);
-
-    if (elapsed < 10.0) {
-      return 0.58f + static_cast<float>(std::sin(elapsed * 0.45) * 0.02);
-    }
-
-    if (elapsed < 18.0) {
-      const float progress = static_cast<float>((elapsed - 10.0) / 8.0);
-      return 0.58f - (0.22f * progress);
-    }
-
-    if (elapsed < 23.0) {
-      return 0.24f;
-    }
-
-    if (elapsed < 28.0) {
-      const float progress = static_cast<float>((elapsed - 23.0) / 5.0);
-      return 0.24f + (0.34f * progress);
-    }
-
-    return 0.58f + static_cast<float>(std::sin(elapsed * 0.35) * 0.015);
+    return 0.50f;
   }
 
   void timer_callback()
@@ -86,7 +62,6 @@ private:
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr speed_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr heartbeat_pub_;
   rclcpp::TimerBase::SharedPtr timer_;
-  rclcpp::Time demo_started_at_;
 };
 
 int main(int argc, char * argv[])
