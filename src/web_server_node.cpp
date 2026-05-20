@@ -74,6 +74,7 @@ std::string status_class(const std::string & value)
 
   if (value.find("REDUCE") != std::string::npos ||
       value.find("USING_") != std::string::npos ||
+      value.find("BACKUP_CONNECTION") != std::string::npos ||
       value.find("DEGRADED") != std::string::npos) {
     return "warn";
   }
@@ -561,9 +562,12 @@ private:
     return true;
   }
 
-  std::string final_action(const DashboardState & state) const
+  std::string final_action(
+    const DashboardState & state,
+    const std::string & primary_health,
+    const std::string & backup_health) const
   {
-    if (state.primary_health == "UNHEALTHY" || state.backup_health == "UNHEALTHY" ||
+    if (primary_health != "HEALTHY" || backup_health != "HEALTHY" ||
         state.system_status == "UNSAFE_STOP") {
       return "STOP";
     }
@@ -583,7 +587,6 @@ private:
   {
     std::lock_guard<std::mutex> lock(mutex_);
     const auto state = state_;
-    const std::string action = final_action(state);
     const bool primary_monitor_online = monitor_fresh(state.last_primary_health);
     const bool backup_monitor_online = monitor_fresh(state.last_backup_health);
     const std::string primary_health =
@@ -594,6 +597,7 @@ private:
       backup_monitor_online ? state.backup_health : "MONITOR_OFFLINE";
     const std::string backup_reason =
       backup_monitor_online ? state.backup_reason : "NO_BACKUP_HEALTH_UPDATE";
+    const std::string action = final_action(state, primary_health, backup_health);
 
     std::ostringstream out;
     out << std::fixed << std::setprecision(2);
@@ -1200,8 +1204,8 @@ private:
     {"node7", "Node 7", "Node 7,/node7/heartbeat,500,1000,NODE7_FAILURE", "/node7/heartbeat"},
     {"node9", "Node 9", "Node 9,/node9/heartbeat,1000,2000,NODE9_QOS_TEST_FAILURE", "/node9/heartbeat"},
     {"node10", "Node 10", "Node 10,/node10/heartbeat,500,1000,NODE10_BAD_QOS_FAILURE", "/node10/heartbeat"},
-    {"node11", "Node 11", "Node 11,/node11/heartbeat,500,,NODE11_DEADLINE_FAILURE", "/node11/heartbeat"},
-    {"node12", "Node 12", "Node 12,/node12/heartbeat,,1000,NODE12_LIVELINESS_FAILURE", "/node12/heartbeat"},
+    {"node11", "Node 11", "Node 11,/node11/heartbeat,1000,,NODE11_DEADLINE_FAILURE", "/node11/heartbeat"},
+    {"node12", "Node 12", "Node 12,/node12/heartbeat,,2000,NODE12_LIVELINESS_FAILURE", "/node12/heartbeat"},
   };
 };
 

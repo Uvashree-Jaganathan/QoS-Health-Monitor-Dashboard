@@ -35,7 +35,9 @@ private:
     heartbeat_msg.data = "node7 alive";
 
     heartbeat_pub_->publish(heartbeat_msg);
-    heartbeat_pub_->assert_liveliness();
+    if (!heartbeat_pub_->assert_liveliness()) {
+      RCLCPP_WARN(this->get_logger(), "Failed to assert Node 7 liveliness");
+    }
   }
 
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr heartbeat_pub_;

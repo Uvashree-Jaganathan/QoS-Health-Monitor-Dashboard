@@ -5,6 +5,7 @@
 #include <sstream>
 #include <algorithm>
 
+#include "ament_index_cpp/get_package_share_directory.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/string.hpp"
 #include "yaml-cpp/yaml.h"
@@ -33,7 +34,7 @@ public:
       10,
       std::bind(&HealthMonitorNode::network_status_callback, this, std::placeholders::_1));
 
-    this->declare_parameter<std::string>("config_file", "config/health_monitor.yaml");
+    this->declare_parameter<std::string>("config_file", default_config_file());
 
     std::string config_file;
     this->get_parameter("config_file", config_file);
@@ -70,9 +71,43 @@ private:
     rclcpp::Subscription<std_msgs::msg::String>::SharedPtr subscription;
   };
 
+  std::string default_config_file() const
+  {
+    try {
+      return ament_index_cpp::get_package_share_directory("qos_health_monitor_demo") +
+        "/config/health_monitor.yaml";
+    } catch (const std::exception & error) {
+      RCLCPP_WARN(
+        this->get_logger(),
+        "Could not resolve package share directory, using relative config path: %s",
+        error.what());
+      return "config/health_monitor.yaml";
+    }
+  }
+
   void load_config(const std::string & config_file)
   {
-    YAML::Node config = YAML::LoadFile(config_file);
+    YAML::Node config;
+
+    try {
+      config = YAML::LoadFile(config_file);
+    } catch (const std::exception & error) {
+      RCLCPP_ERROR(
+        this->get_logger(),
+        "Failed to load health monitor config '%s': %s",
+        config_file.c_str(),
+        error.what());
+      return;
+    }
+
+    if (!config["nodes"] || !config["nodes"].IsSequence())
+    {
+      RCLCPP_ERROR(
+        this->get_logger(),
+        "Health monitor config '%s' must contain a nodes list",
+        config_file.c_str());
+      return;
+    }
 
     for (const auto & node_config : config["nodes"])
     {
@@ -223,16 +258,16 @@ void network_status_callback(const std_msgs::msg::String::SharedPtr msg)
     publish_health_status();
   }
 
-  bool is_already_monitored(const std::string & heartbeat_topic)
+  std::shared_ptr<MonitoredNode> find_monitored_node(const std::string & heartbeat_topic)
   {
     for (const auto & node : monitored_nodes_)
     {
       if (node->heartbeat_topic == heartbeat_topic) {
-        return true;
+        return node;
       }
     }
 
-    return false;
+    return nullptr;
   }
 
  
@@ -246,7 +281,9 @@ void add_monitored_node(
   bool use_liveliness,
   const std::string & failure_reason)
 {
-  if (is_already_monitored(heartbeat_topic))
+  auto monitored_node = find_monitored_node(heartbeat_topic);
+
+  if (monitored_node && !monitored_node->deregistered)
   {
     RCLCPP_INFO(
       this->get_logger(),
@@ -255,7 +292,11 @@ void add_monitored_node(
     return;
   }
 
-  auto monitored_node = std::make_shared<MonitoredNode>();
+  const bool re_registering = static_cast<bool>(monitored_node);
+
+  if (!monitored_node) {
+    monitored_node = std::make_shared<MonitoredNode>();
+  }
 
   monitored_node->name = name;
   monitored_node->heartbeat_topic = heartbeat_topic;
@@ -266,6 +307,9 @@ void add_monitored_node(
 
   monitored_node->use_deadline = use_deadline;
   monitored_node->use_liveliness = use_liveliness;
+  monitored_node->alive = false;
+  monitored_node->qos_incompatible = false;
+  monitored_node->deregistered = false;
 
   auto qos = rclcpp::QoS(rclcpp::KeepLast(10));
   qos.reliable();
@@ -352,11 +396,14 @@ void add_monitored_node(
       },
       options);
 
-  monitored_nodes_.push_back(monitored_node);
+  if (!re_registering) {
+    monitored_nodes_.push_back(monitored_node);
+  }
 
   RCLCPP_INFO(
     this->get_logger(),
-    "Monitoring %s on %s",
+    "%s %s on %s",
+    re_registering ? "Re-monitoring" : "Monitoring",
     name.c_str(),
     heartbeat_topic.c_str());
 

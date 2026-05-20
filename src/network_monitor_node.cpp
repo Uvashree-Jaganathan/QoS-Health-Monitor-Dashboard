@@ -1,5 +1,7 @@
 #include <chrono>
+#include <iomanip>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -43,6 +45,7 @@ private:
     std::string starlink;
     std::string active;
     std::string status;
+    double distance_m = 0.0;
   };
 
   void timer_callback()
@@ -57,6 +60,7 @@ private:
     status_msg.data = state.status;
 
     reason_msg.data =
+      "DISTANCE_FROM_BASE=" + format_distance(state.distance_m) +
       "WIFI=" + state.wifi +
       ",LTE=" + state.lte +
       ",STARLINK=" + state.starlink +
@@ -83,48 +87,106 @@ private:
 
   NetworkState get_fake_network_state()
   {
-    const int phase = step_ % cycle_phase_count_;
+    const double distance_m = simulated_distance_from_base();
 
-    if (phase < 14)
+    if (distance_m <= wifi_range_m_)
     {
       return {
-        "CONNECTED:Lab_WiFi:SIGNAL_84:BAND_5GHz:LATENCY_24ms",
-        "AVAILABLE:SIGNAL_72:LATENCY_58ms",
-        "AVAILABLE:SIGNAL_67:LATENCY_93ms",
+        "CONNECTED:Factory_AP_5G:RSSI_-52dBm:BAND_5GHz:LATENCY_18ms:LOSS_0.2%",
+        "STANDBY:RSRP_-84dBm:SINR_19dB:LATENCY_48ms:LOSS_0.5%",
+        "STANDBY:SNR_10.1dB:LATENCY_82ms:LOSS_0.8%",
         "WIFI",
-        "NETWORK_HEALTHY"
+        "NETWORK_HEALTHY",
+        distance_m
       };
     }
 
-    if (phase < 18)
+    if (distance_m <= lte_range_m_)
     {
       return {
-        "KILLED:ACCESS_POINT_RESTARTING",
-        "CONNECTED:SIGNAL_70:LATENCY_68ms",
-        "AVAILABLE:SIGNAL_64:LATENCY_105ms",
+        "FAILED:OUT_OF_RANGE:LAST_RSSI_-83dBm",
+        "CONNECTED:RSRP_-94dBm:SINR_12dB:LATENCY_72ms:LOSS_1.5%",
+        "STANDBY:SNR_8.4dB:LATENCY_102ms:LOSS_1.1%",
         "LTE",
-        "NETWORK_DEGRADED"
+        "BACKUP_CONNECTION",
+        distance_m
       };
     }
 
-    if (phase < 22)
+    if (distance_m <= starlink_range_m_)
     {
       return {
-        "KILLED:ACCESS_POINT_RESTARTING",
-        "KILLED:CELLULAR_HANDOVER",
-        "CONNECTED:SIGNAL_65:LATENCY_118ms",
+        "FAILED:OUT_OF_RANGE:LAST_RSSI_-90dBm",
+        "FAILED:NO_SERVICE:RSRP_-121dBm:SINR_1dB",
+        "CONNECTED:SNR_7.6dB:LATENCY_126ms:LOSS_2.1%",
         "STARLINK",
-        "NETWORK_DEGRADED"
+        "BACKUP_CONNECTION",
+        distance_m
       };
     }
 
     return {
-      "CONNECTED:Lab_WiFi:SIGNAL_88:BAND_5GHz:LATENCY_21ms",
-      "AVAILABLE:SIGNAL_74:LATENCY_54ms",
-      "AVAILABLE:SIGNAL_69:LATENCY_88ms",
-      "WIFI",
-      "NETWORK_HEALTHY"
+      "FAILED:OUT_OF_RANGE:LAST_RSSI_-94dBm",
+      "FAILED:NO_SERVICE:RSRP_-126dBm",
+      "FAILED:SATELLITE_OBSTRUCTED:SNR_1.4dB",
+      "NONE",
+      "NETWORK_UNHEALTHY",
+      distance_m
     };
+  }
+
+  double simulated_distance_from_base() const
+  {
+    const int phase = step_ % cycle_phase_count_;
+
+    if (phase < 12) {
+      return interpolate(phase, 0, 11, 10.0, 75.0);
+    }
+
+    if (phase < 28) {
+      return interpolate(phase, 12, 27, 120.0, 2800.0);
+    }
+
+    if (phase < 52) {
+      return interpolate(phase, 28, 51, 3500.0, 19000.0);
+    }
+
+    if (phase < 60) {
+      return interpolate(phase, 52, 59, 21000.0, 24000.0);
+    }
+
+    if (phase < 84) {
+      return interpolate(phase, 60, 83, 19000.0, 3500.0);
+    }
+
+    if (phase < 100) {
+      return interpolate(phase, 84, 99, 2800.0, 120.0);
+    }
+
+    return interpolate(phase, 100, 111, 75.0, 10.0);
+  }
+
+  double interpolate(
+    const int phase,
+    const int start_phase,
+    const int end_phase,
+    const double start_distance,
+    const double end_distance) const
+  {
+    const double span = static_cast<double>(end_phase - start_phase);
+    if (span <= 0.0) {
+      return end_distance;
+    }
+
+    const double progress = static_cast<double>(phase - start_phase) / span;
+    return start_distance + ((end_distance - start_distance) * progress);
+  }
+
+  std::string format_distance(const double distance_m) const
+  {
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(0) << distance_m << "m,";
+    return out.str();
   }
 
   void apply_network_loss_grace_period(NetworkState & state)
@@ -142,7 +204,7 @@ private:
     if ((this->now() - network_loss_started_at_).seconds() >= network_loss_grace_seconds_) {
       state.status = "NETWORK_UNHEALTHY";
     } else {
-      state.status = "NETWORK_DEGRADED";
+      state.status = "BACKUP_CONNECTION";
     }
   }
 
@@ -156,7 +218,10 @@ private:
   bool network_loss_active_ = false;
   rclcpp::Time network_loss_started_at_;
   const double network_loss_grace_seconds_ = 0.0;
-  const int cycle_phase_count_ = 28;
+  const double wifi_range_m_ = 80.0;
+  const double lte_range_m_ = 3000.0;
+  const double starlink_range_m_ = 20000.0;
+  const int cycle_phase_count_ = 112;
 };
 
 int main(int argc, char * argv[])

@@ -15,7 +15,7 @@ public:
     auto qos = rclcpp::QoS(rclcpp::KeepLast(10));
 
     qos.reliable();
-    qos.deadline(500ms);
+    qos.deadline(1000ms);
 
     heartbeat_pub_ =
       this->create_publisher<std_msgs::msg::String>(

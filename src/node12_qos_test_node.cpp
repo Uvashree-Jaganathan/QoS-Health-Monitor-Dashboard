@@ -18,7 +18,7 @@ public:
 
     qos.liveliness(RMW_QOS_POLICY_LIVELINESS_MANUAL_BY_TOPIC);
 
-    qos.liveliness_lease_duration(1000ms);
+    qos.liveliness_lease_duration(2000ms);
 
     heartbeat_pub_ =
       this->create_publisher<std_msgs::msg::String>(
@@ -41,7 +41,9 @@ private:
 
     heartbeat_pub_->publish(heartbeat_msg);
 
-    heartbeat_pub_->assert_liveliness();
+    if (!heartbeat_pub_->assert_liveliness()) {
+      RCLCPP_WARN(this->get_logger(), "Failed to assert Node 12 liveliness");
+    }
   }
 
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr heartbeat_pub_;

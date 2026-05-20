@@ -168,7 +168,9 @@ private:
     std_msgs::msg::String heartbeat_msg;
     heartbeat_msg.data = "safety_decision_node alive";
     heartbeat_pub_->publish(heartbeat_msg);
-    heartbeat_pub_->assert_liveliness();
+    if (!heartbeat_pub_->assert_liveliness()) {
+      RCLCPP_WARN(this->get_logger(), "Failed to assert safety decision liveliness");
+    }
 
     std::string node1_output;
     std::string node2_output;

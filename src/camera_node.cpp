@@ -69,7 +69,9 @@ private:
     std_msgs::msg::String object_msg;
     object_msg.data = object_status;
     object_pub_->publish(object_msg);
-    object_pub_->assert_liveliness();
+    if (!object_pub_->assert_liveliness()) {
+      RCLCPP_WARN(this->get_logger(), "Failed to assert camera object publisher liveliness");
+    }
 
     RCLCPP_INFO(
       this->get_logger(),
@@ -83,7 +85,9 @@ private:
     std_msgs::msg::String heartbeat_msg;
     heartbeat_msg.data = "camera_node alive";
     heartbeat_pub_->publish(heartbeat_msg);
-    heartbeat_pub_->assert_liveliness();
+    if (!heartbeat_pub_->assert_liveliness()) {
+      RCLCPP_WARN(this->get_logger(), "Failed to assert camera heartbeat liveliness");
+    }
   }
 
   rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr lidar_sub_;

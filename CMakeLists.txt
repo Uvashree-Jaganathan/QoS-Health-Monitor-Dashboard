@@ -7,6 +7,7 @@ endif()
 
 # Find dependencies
 find_package(ament_cmake REQUIRED)
+find_package(ament_index_cpp REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(yaml-cpp REQUIRED)
@@ -29,12 +30,12 @@ ament_target_dependencies(camera_node rclcpp std_msgs)
 
 # Health Monitor Node
 add_executable(health_monitor_node src/health_monitor_node.cpp)
-ament_target_dependencies(health_monitor_node rclcpp std_msgs)
+ament_target_dependencies(health_monitor_node ament_index_cpp rclcpp std_msgs)
 target_link_libraries(health_monitor_node yaml-cpp)
 
 # Backup Health Monitor Node
 add_executable(health_monitor_backup_node src/health_monitor_backup_node.cpp)
-ament_target_dependencies(health_monitor_backup_node rclcpp std_msgs)
+ament_target_dependencies(health_monitor_backup_node ament_index_cpp rclcpp std_msgs)
 target_link_libraries(health_monitor_backup_node yaml-cpp)
 
 # Status Display Node

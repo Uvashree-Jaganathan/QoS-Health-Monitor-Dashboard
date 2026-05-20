@@ -47,7 +47,9 @@ private:
     heartbeat_msg.data = "node9 alive";
 
     heartbeat_pub_->publish(heartbeat_msg);
-    heartbeat_pub_->assert_liveliness();
+    if (!heartbeat_pub_->assert_liveliness()) {
+      RCLCPP_WARN(this->get_logger(), "Failed to assert Node 9 liveliness");
+    }
 
     RCLCPP_INFO_THROTTLE(
       this->get_logger(),
